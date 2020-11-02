@@ -1,6 +1,7 @@
 load(
     "//tensorflow:tensorflow.bzl",
     "if_cuda_is_configured_compat",
+    "if_rocm_is_configured_compat",
     "tf_copts",
     "tf_cuda_library",
 )
@@ -30,12 +31,13 @@ tf_cuda_library(
     name = "device_tracer",
     srcs = tf_additional_device_tracer_srcs(),
     copts = tf_profiler_copts() + tf_copts(),
-    cuda_deps = [
+    cuda_deps = if_cuda_is_configured_compat([
         "//tensorflow/core/profiler/internal/gpu:cupti_tracer",
         "//tensorflow/core/profiler/internal/gpu:cupti_wrapper",
-    ],
+    ]) + if_rocm_is_configured_compat([
+        "//tensorflow/core/profiler/internal/gpu:rocm_tracer",
+    ]),
     deps = [
-        ":cupti_utils",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
         "//tensorflow/core:protos_all_cc",
@@ -48,7 +50,10 @@ tf_cuda_library(
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/synchronization",
-    ],
+    ] + if_cuda_is_configured_compat([
+        ":cupti_utils",
+    ]) + if_rocm_is_configured_compat([
+    ]),
     alwayslink = 1,
 )
 
@@ -137,24 +142,20 @@ tf_cuda_library(
 )
 
 tf_cuda_library(
-    name = "cupti_collector",
-    srcs = if_cuda_is_configured_compat(["cupti_collector.cc"]),
-    hdrs = if_cuda_is_configured_compat(["cupti_collector.h"]),
-    copts = tf_profiler_copts() + tf_copts(),
+    name = "rocm_tracer",
+    srcs = if_rocm_is_configured_compat(["rocm_tracer.cc"]),
+    hdrs = if_rocm_is_configured_compat(["rocm_tracer.h"]),
+    copts = tf_copts(),
     visibility = ["//visibility:public"],
     deps = [
         "//tensorflow/core:lib",
-        "//tensorflow/core:protos_all_cc",
-        "//tensorflow/core/profiler/protobuf:xplane_proto_cc",
-        "//tensorflow/core/profiler/utils:parse_annotation",
-        "//tensorflow/core/profiler/utils:xplane_builder",
-        "//tensorflow/core/profiler/utils:xplane_schema",
-        "//tensorflow/core/profiler/utils:xplane_utils",
+        "//tensorflow/core/profiler/internal/cpu:annotation_stack",
+        "//tensorflow/stream_executor/rocm:roctracer_wrapper",
         "@com_google_absl//absl/container:fixed_array",
         "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/container:node_hash_map",
         "@com_google_absl//absl/container:node_hash_set",
-        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:optional",
     ],
 )
 

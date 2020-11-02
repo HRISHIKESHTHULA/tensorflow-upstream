@@ -63,6 +63,7 @@ namespace stream_executor {
 using dnn::AlgorithmDesc;
 using dnn::BatchDescriptor;
 using dnn::ConvolutionDescriptor;
+using dnn::DropoutDescriptor;
 using dnn::FilterDescriptor;
 using dnn::NormalizeDescriptor;
 using dnn::PoolingDescriptor;
@@ -264,6 +265,8 @@ namespace wrap {
   __macro(miopenCreateConvolutionDescriptor)                         \
   __macro(miopenCreatePoolingDescriptor)                             \
   __macro(miopenDestroyPoolingDescriptor)                            \
+  __macro(miopenCreateDropoutDescriptor)                             \
+  __macro(miopenDestroyDropoutDescriptor)                            \
   __macro(miopenCreateLRNDescriptor)                                 \
   __macro(miopenDestroyLRNDescriptor)                                \
   __macro(miopenDestroyConvolutionDescriptor)                        \
@@ -287,6 +290,11 @@ namespace wrap {
   __macro(miopenPoolingForward)                                      \
   __macro(miopenPoolingGetWorkSpaceSizeV2)                           \
   __macro(miopenPoolingBackward)                                     \
+  __macro(miopenDropoutForward)                                      \
+  __macro(miopenDropoutBackward)                                     \
+  __macro(miopenDropoutGetStatesSize)                                \
+  __macro(miopenRestoreDropoutDescriptor)                            \
+  __macro(miopenSetDropoutDescriptor)                                \
   __macro(miopenLRNForward)                                          \
   __macro(miopenLRNBackward)                                         \
   __macro(miopenOpTensor)                                            \
@@ -816,6 +824,66 @@ class ScopedConvolutionDescriptor {
   SE_DISALLOW_COPY_AND_ASSIGN(ScopedConvolutionDescriptor);
 };
 
+class ScopedDropoutDescriptor {
+ public:
+  ScopedDropoutDescriptor(Stream* stream, miopenHandle_t miopen_handle,
+                          const DropoutDescriptor& dropout_descriptor,
+                          ScratchAllocator* state_allocator)
+      : handle_(nullptr) {
+    auto status = wrap::miopenCreateDropoutDescriptor(&handle_);
+    if (status != miopenStatusSuccess) {
+      LOG(FATAL) << "could not create miopen dropout descriptor: "
+                 << ToString(status);
+    }
+
+    if (state_allocator) {
+      size_t mask_sizes_in_bytes = dropout_descriptor.mask().size();
+      auto allocated = state_allocator->AllocateBytes(mask_sizes_in_bytes);
+      if (!allocated.ok() ||
+          (mask_memory_ = allocated.ValueOrDie()) == nullptr) {
+        LOG(ERROR) << "Failed to allocate dropout mask";
+        return;
+      }
+      stream->ThenMemcpy(&mask_memory_, dropout_descriptor.mask().data(),
+                         dropout_descriptor.mask().size());
+    }
+
+    // Note that we hard code rng_mode now because there is only one node
+    // available, and this option is not part of user API. In the future we may
+    // consider exposing this as a field in DropoutDescriptor
+    //
+    // We use Restore instead of Set DropoutDescriptor because the RNG random
+    // generator is slow. Therefore, we set use_mask to True and use CPU
+    // generated random mask
+    status = wrap::miopenRestoreDropoutDescriptor(
+        handle_, miopen_handle, dropout_descriptor.rate(), nullptr, 0,
+        dropout_descriptor.seed(),
+        /*use_mask=*/true, /*state_evo=*/false,
+        /*rng_mode=*/miopenRNGType_t::MIOPEN_RNG_PSEUDO_XORWOW);
+    if (status != miopenStatusSuccess) {
+      LOG(FATAL) << "could not restore miopen dropout descriptor: "
+                 << ToString(status);
+    }
+  }
+
+  miopenDropoutDescriptor_t handle() const { return handle_; }
+
+  DeviceMemory<uint8> mask() const { return mask_memory_; }
+
+  ~ScopedDropoutDescriptor() {
+    auto status = wrap::miopenDestroyDropoutDescriptor(handle_);
+    if (status != miopenStatusSuccess) {
+      LOG(ERROR) << "could not destroy miopen dropout descriptor: "
+                 << ToString(status);
+    }
+  }
+
+ private:
+  miopenDropoutDescriptor_t handle_;  // Owned.
+  DeviceMemory<uint8> mask_memory_;   // Owned
+  SE_DISALLOW_COPY_AND_ASSIGN(ScopedDropoutDescriptor);
+};
+
 // Turns a PoolingDescriptor structure into a miopen pooling descriptor handle
 // within a scope.
 class ScopedPoolingDescriptor {
@@ -1129,7 +1197,7 @@ class ScopedFusionPlanBase {
       const int op_idx, const float* alpha, const float* beta,
       const void* scale, const void* offset, void* running_mean,
       void* running_variance, void* saved_mean, void* saved_inv_variance,
-      double epsilon, double exponential_average_factor) {
+      double exponential_average_factor, double epsilon) {
     miopenFusionOpDescriptor_t batchnorm_op;
     auto status =
         wrap::miopenFusionPlanGetOp(fusion_plan_, op_idx, &batchnorm_op);
@@ -1140,8 +1208,8 @@ class ScopedFusionPlanBase {
 
     status = wrap::miopenSetOpArgsBatchNormForward(
         fusion_args_, batchnorm_op, alpha, beta, scale, offset, saved_mean,
-        saved_inv_variance, running_mean, running_variance, epsilon,
-        exponential_average_factor);
+        saved_inv_variance, running_mean, running_variance,
+        exponential_average_factor, epsilon);
     if (status != miopenStatusSuccess) {
       LOG(FATAL) << "call to miopenSetOpArgsBatchNormForward failed: "
                  << ToString(status);
@@ -1500,7 +1568,7 @@ class ScopedFusionPlanBatchNormActivationForward : public ScopedFusionPlanBase {
     float beta = 0.0;
     return ScopedFusionPlanBase::SetBatchNormForwardArgs(
         k_batchnorm_op_idx, &alpha, &beta, scale, offset, batch_mean, batch_var,
-        saved_mean, saved_var, epsilon, /*exponential_average_factor=*/1.0);
+        saved_mean, saved_var, /*exponential_average_factor=*/1.0, epsilon);
   }
 
   miopenStatus_t SetActivationForwardArgs(
@@ -1649,6 +1717,8 @@ miopenDataType_t ToMIOpenDataType(
   switch (data_type) {
     case dnn::DataType::kFloat:
       return miopenFloat;
+    case dnn::DataType::kBFloat16:
+      return miopenBFloat16;
     case dnn::DataType::kHalf:
       return miopenHalf;
     case dnn::DataType::kDouble:
@@ -1765,6 +1835,7 @@ class MIOpenRnnDescriptor : public MIOpenDescriptorCommon<dnn::RnnDescriptor> {
                       miopenRNNDirectionMode_t direction_mode,
                       miopenRNNMode_t rnn_mode, miopenDataType_t data_type,
                       float dropout, uint64 seed,
+                      const dnn::AlgorithmConfig& algorithm_config,
                       ScratchAllocator* state_allocator)
       : rnn_desc_(nullptr),
         num_layers_(num_layers),
@@ -1773,7 +1844,8 @@ class MIOpenRnnDescriptor : public MIOpenDescriptorCommon<dnn::RnnDescriptor> {
         input_mode_(input_mode),
         direction_mode_(direction_mode),
         rnn_mode_(rnn_mode),
-        data_type_(data_type) {
+        data_type_(data_type),
+        algorithm_config_(algorithm_config) {
     // Create the RNN handle
     auto status = wrap::miopenCreateRNNDescriptor(&rnn_desc_);
     RETURN_IF_MIOPEN_ERROR(status, "Unable to create RNN descriptor");
@@ -1809,6 +1881,9 @@ class MIOpenRnnDescriptor : public MIOpenDescriptorCommon<dnn::RnnDescriptor> {
   miopenRNNDirectionMode_t direction_mode() const { return direction_mode_; }
   miopenRNNMode_t rnn_mode() const { return rnn_mode_; }
   miopenDataType_t data_type() const { return data_type_; }
+  const dnn::AlgorithmConfig& algorithm_config() const {
+    return algorithm_config_;
+  }
   int64 ParamsSizeInBytes() const override {
     return miopen_params_desc_->params_size_in_bytes();
   }
@@ -1834,6 +1909,7 @@ class MIOpenRnnDescriptor : public MIOpenDescriptorCommon<dnn::RnnDescriptor> {
   miopenRNNDirectionMode_t direction_mode_;
   miopenRNNMode_t rnn_mode_;
   miopenDataType_t data_type_;
+  dnn::AlgorithmConfig algorithm_config_;
   port::Status status_;
   // no dropout in MIOpen.
   // std::unique_ptr<miopenDropoutDescriptor> miopen_dropout_desc_;
@@ -2094,7 +2170,8 @@ bool MIOpenSupport::DoRnnForwardImpl(
     const MIOpenRnnStateTensorDescriptor& output_c_desc,
     DeviceMemory<T>* output_c_data, bool is_training,
     ScratchAllocator* reserve_space_allocator,
-    ScratchAllocator* workspace_allocator) {
+    ScratchAllocator* workspace_allocator,
+    dnn::ProfileResult* output_profile_result) {
   // extract model parameters
   RnnModelDims model_dims;
   bool res = ExtractAndCheckRnnForward(
@@ -2151,6 +2228,19 @@ bool MIOpenSupport::DoRnnForwardImpl(
     }
   }
 
+  std::unique_ptr<GpuTimer, GpuTimerDeleter> timer;
+  const bool is_profiling = output_profile_result != nullptr;
+  if (is_profiling) {
+    timer.reset(new GpuTimer(parent_));
+    // The start and stop of the timer should be as close to the Cudnn call as
+    // possible. It is still possible for other threads to issue workload on
+    // to this stream. So it could take multiple profiling measurements.
+    if (!timer->Init() || !timer->Start(AsGpuStream(stream))) {
+      LOG(ERROR) << "Failed to start timer";
+      return false;
+    }
+  }
+
   // make the forward call
   if (!is_training) {
     auto status = wrap::miopenRNNForwardInference(
@@ -2190,6 +2280,18 @@ bool MIOpenSupport::DoRnnForwardImpl(
       return false;
     }
   }
+
+  if (is_profiling) {
+    if (!timer->Stop(AsGpuStream(stream))) {
+      LOG(ERROR) << "Failed to stop timer";
+      return false;
+    }
+    auto algo_desc = *rnn_desc.algorithm_config().algorithm();
+    output_profile_result->set_algorithm(algo_desc);
+    output_profile_result->set_elapsed_time_in_ms(
+        timer->GetElapsedMilliseconds());
+  }
+
   return true;
 }
 
@@ -2216,7 +2318,8 @@ bool MIOpenSupport::DoRnnBackwardImpl(
     DeviceMemory<T>* input_c_backprop_data,
     DeviceMemory<T>* params_backprop_data,
     DeviceMemory<uint8>* reserve_space_data,
-    ScratchAllocator* workspace_allocator) {
+    ScratchAllocator* workspace_allocator,
+    dnn::ProfileResult* output_profile_result) {
   // extract model parameters
   RnnModelDims model_dims;
   bool res = ExtractAndCheckRnnForward(
@@ -2263,6 +2366,19 @@ bool MIOpenSupport::DoRnnBackwardImpl(
   if ((size_data > 0) && (input_c_backprop_data->opaque() != nullptr))
     stream->ThenMemZero(input_c_backprop_data, size_data * type_size);
 
+  std::unique_ptr<GpuTimer, GpuTimerDeleter> timer;
+  const bool is_profiling = output_profile_result != nullptr;
+  if (is_profiling) {
+    timer.reset(new GpuTimer(parent_));
+    // The start and stop of the timer should be as close to the Cudnn call as
+    // possible. It is still possible for other threads to issue workload on
+    // to this stream. So it could take multiple profiling measurements.
+    if (!timer->Init() || !timer->Start(AsGpuStream(stream))) {
+      LOG(ERROR) << "Failed to start timer";
+      return false;
+    }
+  }
+
   // make the backward data call
   auto status = wrap::miopenRNNBackwardData(
       miopen.handle() /*handle*/, rnn_desc.handle() /*rnnDesc*/,
@@ -2307,6 +2423,17 @@ bool MIOpenSupport::DoRnnBackwardImpl(
                  << ToString(status);
       return false;
     }
+  }
+
+  if (is_profiling) {
+    if (!timer->Stop(AsGpuStream(stream))) {
+      LOG(ERROR) << "Failed to stop timer";
+      return false;
+    }
+    auto algo_desc = *rnn_desc.algorithm_config().algorithm();
+    output_profile_result->set_algorithm(algo_desc);
+    output_profile_result->set_elapsed_time_in_ms(
+        timer->GetElapsedMilliseconds());
   }
 
   return true;
@@ -2538,7 +2665,8 @@ MIOpenSupport::createRnnDescriptor(
       miopen.handle(), num_layers, hidden_size, input_size,
       ToMIOpenRnnInputMode(input_mode),
       ToMIOpenRnnDirectionMode(direction_mode), ToMIOpenRnnMode(rnn_mode),
-      ToMIOpenDataType(data_type), dropout, seed, state_allocator));
+      ToMIOpenDataType(data_type), dropout, seed, algorithm_config,
+      state_allocator));
   if (!rnn_desc->ok()) {
     return rnn_desc->Status();
   }
@@ -2592,8 +2720,6 @@ bool MIOpenSupport::DoRnnForward(
     ScratchAllocator* reserve_space_allocator,
     ScratchAllocator* workspace_allocator,
     dnn::ProfileResult* output_profile_result) {
-  // ROCM TODO: output_profile_result is ignore for now
-
   const MIOpenRnnDescriptor& miopen_rnn_desc =
       static_cast<const MIOpenRnnDescriptor&>(rnn_desc);
   const MIOpenRnnSequenceTensorDescriptor& miopen_input_desc =
@@ -2614,7 +2740,7 @@ bool MIOpenSupport::DoRnnForward(
       miopen_input_h_desc, input_h_data, miopen_input_c_desc, input_c_data,
       params, miopen_output_desc, output_data, miopen_output_h_desc,
       output_h_data, miopen_output_c_desc, output_c_data, is_training,
-      reserve_space_allocator, workspace_allocator);
+      reserve_space_allocator, workspace_allocator, output_profile_result);
 }
 
 bool MIOpenSupport::DoRnnForward(
@@ -2634,8 +2760,6 @@ bool MIOpenSupport::DoRnnForward(
     ScratchAllocator* reserve_space_allocator,
     ScratchAllocator* workspace_allocator,
     dnn::ProfileResult* output_profile_result) {
-  // ROCM TODO: output_profile_result is ignore for now
-
   const MIOpenRnnDescriptor& miopen_rnn_desc =
       static_cast<const MIOpenRnnDescriptor&>(rnn_desc);
   const MIOpenRnnSequenceTensorDescriptor& miopen_input_desc =
@@ -2656,7 +2780,7 @@ bool MIOpenSupport::DoRnnForward(
       miopen_input_h_desc, input_h_data, miopen_input_c_desc, input_c_data,
       params, miopen_output_desc, output_data, miopen_output_h_desc,
       output_h_data, miopen_output_c_desc, output_c_data, is_training,
-      reserve_space_allocator, workspace_allocator);
+      reserve_space_allocator, workspace_allocator, output_profile_result);
 }
 
 bool MIOpenSupport::DoRnnForward(
@@ -2706,8 +2830,6 @@ bool MIOpenSupport::DoRnnBackward(
     DeviceMemory<uint8>* reserve_space_data,
     ScratchAllocator* workspace_allocator,
     dnn::ProfileResult* output_profile_result) {
-  // ROCM TODO: output_profile_result is ignore for now
-
   const MIOpenRnnDescriptor& miopen_rnn_desc =
       static_cast<const MIOpenRnnDescriptor&>(rnn_desc);
   const MIOpenRnnSequenceTensorDescriptor& miopen_input_desc =
@@ -2730,7 +2852,7 @@ bool MIOpenSupport::DoRnnBackward(
       output_h_data, miopen_output_c_desc, output_c_data, output_backprop_data,
       output_h_backprop_data, output_c_backprop_data, input_backprop_data,
       input_h_backprop_data, input_c_backprop_data, params_backprop_data,
-      reserve_space_data, workspace_allocator);
+      reserve_space_data, workspace_allocator, output_profile_result);
 }
 
 bool MIOpenSupport::DoRnnBackward(
@@ -2757,8 +2879,6 @@ bool MIOpenSupport::DoRnnBackward(
     DeviceMemory<uint8>* reserve_space_data,
     ScratchAllocator* workspace_allocator,
     dnn::ProfileResult* output_profile_result) {
-  // ROCM TODO: output_profile_result is ignore for now
-
   const MIOpenRnnDescriptor& miopen_rnn_desc =
       static_cast<const MIOpenRnnDescriptor&>(rnn_desc);
   const MIOpenRnnSequenceTensorDescriptor& miopen_input_desc =
@@ -2781,7 +2901,7 @@ bool MIOpenSupport::DoRnnBackward(
       output_h_data, miopen_output_c_desc, output_c_data, output_backprop_data,
       output_h_backprop_data, output_c_backprop_data, input_backprop_data,
       input_h_backprop_data, input_c_backprop_data, params_backprop_data,
-      reserve_space_data, workspace_allocator);
+      reserve_space_data, workspace_allocator, output_profile_result);
 }
 
 bool MIOpenSupport::DoRnnBackward(
@@ -3391,7 +3511,6 @@ bool MIOpenSupport::GetMIOpenConvolveAlgorithmsFindMode(
       break;
     }
   }
-
   // allocate scratch memory
   DeviceMemory<uint8> scratch_memory;
   if (scratch_memory_size != 0) {
@@ -3477,7 +3596,6 @@ bool MIOpenSupport::GetMIOpenConvolveAlgorithmsFindMode(
       break;
     }
   }
-
   out_algorithms->emplace_back(
       GetProfileResultFromConvAlgoPerf(kind, returnedAlgorithm));
 
@@ -3486,7 +3604,16 @@ bool MIOpenSupport::GetMIOpenConvolveAlgorithmsFindMode(
 
 bool MIOpenSupport::GetRnnAlgorithms(
     std::vector<dnn::AlgorithmDesc>* out_algorithms) {
-  // ROCM TODO: implement this with proper MIOpen API
+  std::vector<dnn::AlgorithmDesc::Index> algo_types = {
+      // clang-format off
+    miopenRNNdefault,
+      // clang-format on
+  };
+
+  out_algorithms->clear();
+  for (auto i : algo_types) {
+    out_algorithms->push_back({i, /*use_tensor_ops=*/false});
+  }
   return true;
 }
 
@@ -3584,8 +3711,6 @@ bool MIOpenSupport::DoBatchNormalizationForwardImpl(
 
   auto status = miopenStatusInvalidValue;
   if (is_training) {
-    stream->ThenMemZero(batch_mean, batch_mean->size());
-    stream->ThenMemZero(batch_var, batch_var->size());
     status = wrap::miopenBatchNormalizationForwardTraining(
         miopen.handle(), mode, &one, &zero, x_descriptor.handle(), x.opaque(),
         x_descriptor.handle(), y->opaque(), scale_offset_descriptor.handle(),
@@ -3998,6 +4123,123 @@ bool MIOpenSupport::DoActivate(Stream* stream,
                                uint64 options) {
   LOG(ERROR) << "miopen does not support activation yet";
   return false;
+}
+
+bool MIOpenSupport::DoDropoutForward(
+    Stream* stream, const dnn::DropoutDescriptor& dropout_params,
+    const dnn::BatchDescriptor& noise_dimensions,
+    const dnn::BatchDescriptor& input_dimensions,
+    const DeviceMemory<float>& input_data,
+    const dnn::BatchDescriptor& output_dimensions,
+    DeviceMemory<float>* output_data, ScratchAllocator* workspace_allocator) {
+  auto miopen = miopen_->GetHandle(parent_, stream);
+  const ScopedTensorDescriptor src_desc{input_dimensions, miopenFloat};
+  const ScopedTensorDescriptor dest_desc{output_dimensions, miopenFloat};
+  const ScopedTensorDescriptor noise_desc{noise_dimensions, miopenFloat};
+  const ScopedDropoutDescriptor dropout_desc{
+      stream, miopen.handle(), dropout_params, workspace_allocator};
+
+  auto status = wrap::miopenDropoutForward(
+      miopen.handle(), dropout_desc.handle(), noise_desc.handle(),
+      src_desc.handle(), input_data.opaque(), dest_desc.handle(),
+      output_data->opaque(), dropout_desc.mask().opaque(),
+      dropout_desc.mask().size());
+  if (status != miopenStatusSuccess) {
+    LOG(ERROR) << "failed to enqueue forward dropout on stream: "
+               << ToString(status);
+    return false;
+  }
+  return true;
+}
+
+bool MIOpenSupport::DoDropoutForward(
+    Stream* stream, const dnn::DropoutDescriptor& dropout_params,
+    const dnn::BatchDescriptor& noise_dimensions,
+    const dnn::BatchDescriptor& input_dimensions,
+    const DeviceMemory<Eigen::half>& input_data,
+    const dnn::BatchDescriptor& output_dimensions,
+    DeviceMemory<Eigen::half>* output_data,
+    ScratchAllocator* workspace_allocator) {
+  auto miopen = miopen_->GetHandle(parent_, stream);
+  const ScopedTensorDescriptor src_desc{input_dimensions, miopenHalf};
+  const ScopedTensorDescriptor dest_desc{output_dimensions, miopenHalf};
+  const ScopedTensorDescriptor noise_desc{noise_dimensions, miopenFloat};
+  const ScopedDropoutDescriptor dropout_desc{
+      stream, miopen.handle(), dropout_params, workspace_allocator};
+  auto status = wrap::miopenDropoutForward(
+      miopen.handle(), dropout_desc.handle(), noise_desc.handle(),
+      src_desc.handle(), input_data.opaque(), dest_desc.handle(),
+      output_data->opaque(), dropout_desc.mask().opaque(),
+      dropout_desc.mask().size());
+
+  if (status != miopenStatusSuccess) {
+    LOG(ERROR) << "failed to enqueue forward dropout on stream: "
+               << ToString(status);
+    return false;
+  }
+  return true;
+}
+
+bool MIOpenSupport::DoDropoutBackward(
+    Stream* stream, const dnn::DropoutDescriptor& dropout_params,
+    const dnn::BatchDescriptor& noise_dimensions,
+    const dnn::BatchDescriptor& input_diff_dimensions,
+    const DeviceMemory<float>& input_diff_data,
+    const dnn::BatchDescriptor& output_diff_dimensions,
+    DeviceMemory<float>* output_diff_data,
+    ScratchAllocator* workspace_allocator) {
+  auto miopen = miopen_->GetHandle(parent_, stream);
+  const ScopedTensorDescriptor input_diff_desc{input_diff_dimensions,
+                                               miopenFloat};
+  const ScopedTensorDescriptor output_diff_desc{output_diff_dimensions,
+                                                miopenFloat};
+  const ScopedTensorDescriptor noise_desc{noise_dimensions, miopenFloat};
+  const ScopedDropoutDescriptor dropout_desc{
+      stream, miopen.handle(), dropout_params, workspace_allocator};
+
+  auto status = wrap::miopenDropoutBackward(
+      miopen.handle(), dropout_desc.handle(), noise_desc.handle(),
+      /*dyDesc*/ input_diff_desc.handle(), /*dy*/ input_diff_data.opaque(),
+      /*dxDesc*/ output_diff_desc.handle(), /*dx*/ output_diff_data->opaque(),
+      dropout_desc.mask().opaque(), dropout_desc.mask().size());
+
+  if (status != miopenStatusSuccess) {
+    LOG(ERROR) << "failed to enqueue backward dropout on stream: "
+               << ToString(status);
+    return false;
+  }
+  return true;
+}
+
+bool MIOpenSupport::DoDropoutBackward(
+    Stream* stream, const dnn::DropoutDescriptor& dropout_params,
+    const dnn::BatchDescriptor& noise_dimensions,
+    const dnn::BatchDescriptor& input_diff_dimensions,
+    const DeviceMemory<Eigen::half>& input_diff_data,
+    const dnn::BatchDescriptor& output_diff_dimensions,
+    DeviceMemory<Eigen::half>* output_diff_data,
+    ScratchAllocator* workspace_allocator) {
+  auto miopen = miopen_->GetHandle(parent_, stream);
+  const ScopedTensorDescriptor input_diff_desc{input_diff_dimensions,
+                                               miopenHalf};
+  const ScopedTensorDescriptor output_diff_desc{output_diff_dimensions,
+                                                miopenHalf};
+  const ScopedTensorDescriptor noise_desc{noise_dimensions, miopenFloat};
+  const ScopedDropoutDescriptor dropout_desc{
+      stream, miopen.handle(), dropout_params, workspace_allocator};
+
+  auto status = wrap::miopenDropoutBackward(
+      miopen.handle(), dropout_desc.handle(), noise_desc.handle(),
+      /*dyDesc*/ input_diff_desc.handle(), /*dy*/ input_diff_data.opaque(),
+      /*dxDesc*/ output_diff_desc.handle(), /*dx*/ output_diff_data->opaque(),
+      dropout_desc.mask().opaque(), dropout_desc.mask().size());
+
+  if (status != miopenStatusSuccess) {
+    LOG(ERROR) << "failed to enqueue backward dropout on stream: "
+               << ToString(status);
+    return false;
+  }
+  return true;
 }
 
 bool MIOpenSupport::DoPoolForward(

@@ -115,6 +115,12 @@ def _run_loop_model():
 
 class RunMetadataTest(test.TestCase):
 
+  # This test requires HARDWARE_TRACE or FULL_TRACE to be specified to
+  # work as expected. Since we now run this test with SOFTWARE_TRACE
+  # (see _run_model routine above), this test will / should fail since
+  # GPU device tracers are not enabled
+  @test.disable_for_rocm(skip_message="Test fails on ROCm when " 
+                                      "run without FULL_TRACE")
   @test_util.run_deprecated_v1
   def testGPU(self):
     if not test.is_gpu_available(cuda_only=True):
@@ -129,10 +135,7 @@ class RunMetadataTest(test.TestCase):
 
     ret = _extract_node(run_meta, 'MatMul')
     self.assertEqual(len(ret['gpu:0']), 1)
-    if not test.is_built_with_rocm():
-      # skip this check for the ROCm platform
-      # stream level tracing is not yet supported on the ROCm platform
-      self.assertEqual(len(ret['gpu:0/stream:all']), 1, '%s' % run_meta)
+    self.assertEqual(len(ret['gpu:0/stream:all']), 1, '%s' % run_meta)
 
   @test_util.run_deprecated_v1
   def testAllocationHistory(self):
@@ -221,6 +224,12 @@ class RunMetadataTest(test.TestCase):
     for _, f in six.iteritems(back_to_forward):
       self.assertTrue(f in forward_op)
 
+  # This test requires HARDWARE_TRACE or FULL_TRACE to be specified to
+  # work as expected. Since we now run this test with SOFTWARE_TRACE
+  # (see _run_model routine above), this test will / should fail since
+  # GPU device tracers are not enabled
+  @test.disable_for_rocm(skip_message="Test fails on ROCm when "
+                                      "run without FULL_TRACE")
   def testLoopGPU(self):
     if not test.is_gpu_available():
       return
@@ -231,15 +240,16 @@ class RunMetadataTest(test.TestCase):
       # The while-loop caused a node to appear 4 times in scheduling.
       ret = _extract_node(run_meta,
                           'rnn/while/basic_rnn_cell/MatMul')
-      self.assertEqual(len(ret['gpu:0']), 4, '%s' % run_meta)
+      ret2 = _extract_node(run_meta,
+                          'rnn/while/body/_1/basic_rnn_cell/MatMul')
+
+      self.assertEqual(len(ret['gpu:0']) + len(ret2['gpu:0']), 4, 
+        '%s' % run_meta)
 
       total_cpu_execs = 0
       for node in ret['gpu:0']:
         total_cpu_execs += node.op_end_rel_micros
 
-      if not test.is_built_with_rocm():
-        # skip this check for the ROCm platform
-        # stream level tracing is not yet supported on the ROCm platform
         self.assertGreaterEqual(
             len(ret['gpu:0/stream:all']), 4, '%s' % run_meta)
 

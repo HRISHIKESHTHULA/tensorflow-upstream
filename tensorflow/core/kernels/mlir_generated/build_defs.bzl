@@ -1,9 +1,10 @@
 """Generates cubin headers for TF dialect ops."""
 
-load("@local_config_cuda//cuda:build_defs.bzl", "cuda_gpu_architectures")
+load("@local_config_cuda//cuda:build_defs.bzl", "cuda_gpu_architectures", "if_cuda")
 load(
     "@local_config_rocm//rocm:build_defs.bzl",
     "rocm_gpu_architectures",
+    "if_rocm",
     "rocm_is_configured",
 )
 load(

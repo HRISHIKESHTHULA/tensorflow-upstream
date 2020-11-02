@@ -2,6 +2,7 @@
 
 load("//tensorflow:tensorflow.bzl", "tf_custom_op_library")
 load("//tensorflow:tensorflow.bzl", "cuda_py_test")
+load("//tensorflow:tensorflow.bzl", "gpu_py_test")
 
 # buildifier: disable=same-origin-load
 load("//tensorflow:tensorflow.bzl", "tf_py_test")
@@ -85,6 +86,7 @@ tf_py_test(
     name = "batch_scatter_ops_test",
     srcs = ["batch_scatter_ops_test.py"],
     tfrt_enabled = True,
+    tags = ["no_rocm"],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -144,6 +146,7 @@ tf_py_test(
     srcs = ["map_ops_test.py"],
     grpc_enabled = True,
     tags = [
+        "no_rocm",
         "noasan",  # TODO(b/164696004)
         "notsan",  # TODO(b/164696004)
     ],
@@ -252,7 +255,6 @@ cuda_py_test(
     srcs = ["cholesky_op_test.py"],
     shard_count = 5,
     tags = [
-        "no_rocm",  # TODO(rocm): feature not supported on ROCm platform
         "nomsan",  # TODO(b/131773093): Re-enable.
     ],
     deps = [
@@ -272,7 +274,6 @@ tf_py_test(
     size = "small",
     srcs = ["clip_ops_test.py"],
     tags = [
-        "no_gpu",  # b/127001953
         "no_windows",
     ],
     tfrt_enabled = True,
@@ -289,6 +290,7 @@ cuda_py_test(
     srcs = ["collective_ops_test.py"],
     tags = [
         "multi_and_single_gpu",
+        "no_rocm",
     ],
     tfrt_enabled = False,
     deps = [
@@ -1766,6 +1768,21 @@ cuda_py_test(
 )
 
 cuda_py_test(
+    name = "batch_gemm_op_test",
+    size = "small",
+    srcs = ["batch_gemm_op_test.py"],
+    deps = [
+        "//third_party/py/numpy",
+        "//tensorflow/python:array_ops",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:framework_for_generated_wrappers",
+        "//tensorflow/python:math_ops",
+    ],
+    shard_count = 20,
+    xla_enable_strict_auto_jit = True,
+)
+
+cuda_py_test(
     name = "batchtospace_op_test",
     size = "small",
     srcs = ["batchtospace_op_test.py"],
@@ -2537,6 +2554,7 @@ cuda_py_test(
     size = "small",
     srcs = ["relu_op_test.py"],
     tfrt_enabled = True,
+    tags = ["no_rocm"],
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -2928,7 +2946,7 @@ cuda_py_test(
     srcs = ["transpose_op_test.py"],
     shard_count = 10,
     tags = [
-        "no_gpu",
+        "no_cuda",
         "no_oss",
         "notap",  # flaky timeout/segfault, b/136498892
         "optonly",  # times out
@@ -3072,7 +3090,7 @@ cuda_py_test(
 
 cuda_py_test(
     name = "conv_ops_test",
-    size = "medium",
+    size = "large",
     srcs = ["conv_ops_test.py"],
     shard_count = 4,
     tags = [
@@ -3430,7 +3448,7 @@ cuda_py_test(
 
 cuda_py_test(
     name = "conv_ops_3d_test",
-    size = "medium",
+    size = "large",
     srcs = ["conv_ops_3d_test.py"],
     shard_count = 30,
     tags = ["no_cuda11"],
@@ -3445,7 +3463,7 @@ cuda_py_test(
 
 cuda_py_test(
     name = "cwise_ops_test",
-    size = "medium",
+    size = "large",
     srcs = ["cwise_ops_test.py"],
     shard_count = 50,
     tags = ["no_windows"],  # b/163222163
@@ -3689,6 +3707,7 @@ cuda_py_test(
     srcs = ["tensordot_op_test.py"],
     shard_count = 20,
     xla_enable_strict_auto_jit = False,  # b/161856380
+    tags = ["no_rocm"],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3934,6 +3953,30 @@ cuda_py_test(
     ],
 )
 
+gpu_py_test(
+    name = "gpu_fusion_ops_test",
+    size = "small",
+    srcs = ["gpu_fusion_ops_test.py"],
+    deps = [
+        "//third_party/py/numpy",
+        "//tensorflow/core:protos_all_py",
+        "//tensorflow/python:array_ops",
+        "//tensorflow/python:client",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:errors",
+        "//tensorflow/python:framework_for_generated_wrappers",
+        "//tensorflow/python:framework_test_lib",
+        "//tensorflow/python:nn",
+        "//tensorflow/python:nn_grad",
+        "//tensorflow/python:nn_ops",
+        "//tensorflow/python:gradients",
+        "//tensorflow/python:math_ops",
+        "//tensorflow/python:platform",
+        "//tensorflow/python:random_ops",
+        "//tensorflow/python:variables",
+    ],
+)
+
 cuda_py_test(
     name = "critical_section_test",
     size = "medium",
@@ -3962,7 +4005,6 @@ cuda_py_test(
     size = "medium",
     srcs = ["tridiagonal_matmul_op_test.py"],
     shard_count = 10,
-    tags = ["no_rocm"],
     tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",

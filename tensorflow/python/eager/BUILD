@@ -311,7 +311,6 @@ cuda_py_test(
     name = "profiler_test",
     srcs = ["profiler_test.py"],
     python_version = "PY3",
-    tags = ["no_rocm"],
     deps = [
         ":profiler",
         ":test",
@@ -489,6 +488,7 @@ cuda_py_test(
     shard_count = 15,
     tags = [
         "nomac",  # b/157056289
+	"no_rocm",
     ],
     deps = [
         ":backprop",
@@ -1154,6 +1154,7 @@ py_test(
     srcs_version = "PY2AND3",
     tags = [
         "no_pip",  # No point linking the gen script in the pip package.
+        "no_rocm",
     ],
     deps = [
         ":gradient_input_output_exclusions",

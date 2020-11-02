@@ -21,6 +21,7 @@ cc_library(
         ".",
         "rocm/include",
         "rocm/include/rocrand",
+        "rocm/include/roctracer",
     ],
     visibility = ["//visibility:public"],
 )
@@ -109,6 +110,7 @@ cc_library(
         ":hiprand",
         ":miopen",
         ":hipsparse",
+        ":roctracer",
     ],
 )
 
@@ -143,11 +145,15 @@ cc_library(
     data = ["rocm/lib/%{hipsparse_lib}"],
 )
 
+cc_library(
+    name = "roctracer",
+    data = ["rocm/lib/%{roctracer_lib}"],
+)
+
 filegroup(
     name = "rocm_root",
     srcs = [
         "rocm/bin/clang-offload-bundler",
-        "rocm/bin/bin2c.py",
     ],
 )
 

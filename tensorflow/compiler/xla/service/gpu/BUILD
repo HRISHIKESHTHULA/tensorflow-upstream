@@ -121,8 +121,6 @@ tf_cc_test(
     tags = tf_cuda_tests_tags(),
     deps = [
         "//tensorflow/compiler/xla/tests:xla_internal_test_main",  # fixdeps: keep
-    ] + if_cuda_is_configured([
-        "@local_config_cuda//cuda:cuda_headers",
         "//tensorflow/compiler/xla:status_macros",
         "//tensorflow/compiler/xla:test_helpers",
         "//tensorflow/compiler/xla/client:xla_builder",
@@ -131,6 +129,11 @@ tf_cc_test(
         "//tensorflow/compiler/xla/service:gpu_plugin",
         "//tensorflow/compiler/xla/tests:client_library_test_base",
         "//tensorflow/core:test",
+    ] + if_cuda_is_configured([
+       "@local_config_cuda//cuda:cuda_headers",
+    ])
+    + if_rocm_is_configured([
+       "@local_config_rocm//rocm:rocm_headers",
     ]),
 )
 
@@ -200,6 +203,7 @@ cc_library(
     deps = [
         "//tensorflow/compiler/xla:xla_data_proto_cc",
         "//tensorflow/compiler/xla/service/llvm_ir:llvm_util",
+        "//tensorflow/compiler/xla/service/llvm_ir:ir_builder_mixin",
         "//tensorflow/core:lib",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
@@ -608,9 +612,9 @@ cc_library(
         "//tensorflow/stream_executor",
         "//tensorflow/stream_executor:blas",
         "//tensorflow/stream_executor:device_memory",
-        "//tensorflow/stream_executor:device_memory_allocator",
         "//tensorflow/stream_executor:kernel",
         "//tensorflow/stream_executor/gpu:gpu_stream",
+        "//tensorflow/stream_executor:device_memory_allocator",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -824,10 +828,6 @@ cc_library(
     srcs = if_cuda_is_configured(["cusolver_context.cc"]),
     hdrs = ["cusolver_context.h"],
     deps = [
-        # LINT.IfChange
-        "@local_config_cuda//cuda:cublas_headers",
-        "@local_config_cuda//cuda:cusolver_headers",
-        # LINT.ThenChange(//tensorflow/copy.bara.sky:cublas_headers)
         "//tensorflow/compiler/xla:statusor",
         "//tensorflow/compiler/xla:types",
         "//tensorflow/compiler/xla:util",
@@ -835,6 +835,10 @@ cc_library(
         "//tensorflow/core/platform:stream_executor_no_cuda",
         "//tensorflow/stream_executor:blas",
     ] + if_cuda_is_configured([
+        # LINT.IfChange
+        "@local_config_cuda//cuda:cublas_headers",
+        "@local_config_cuda//cuda:cusolver_headers",
+        # LINT.ThenChange(//tensorflow/copy.bara.sky:cublas_headers)
         "@local_config_cuda//cuda:cuda_headers",
         "//tensorflow/stream_executor/cuda:cusolver_lib",
     ]),
@@ -1144,6 +1148,7 @@ cc_library(
     hdrs = ["gpu_transfer_manager.h"],
     deps = [
         ":infeed_manager",
+        ":gpu_compiler",
         ":outfeed_manager",
         ":target_constants",
         "//tensorflow/compiler/xla:literal",
@@ -1347,7 +1352,7 @@ cc_library(
         "amdgpu_compiler.cc",
     ],
     hdrs = [
-        "amdgpu_compiler.h",
+        "amdgpu_compiler.h"
     ],
     deps = [
         ":gemm_rewriter",
@@ -1576,11 +1581,12 @@ cc_library(
 tf_cc_test(
     name = "buffer_comparator_test",
     srcs = if_cuda_is_configured(["buffer_comparator_test.cc"]),
-    tags = ["no_rocm"] + tf_cuda_tests_tags(),
+    tags = tf_cuda_tests_tags(),
     deps = [
         "//tensorflow/core:test_main",
         "//tensorflow/compiler/xla:shape_util",
         "//tensorflow/compiler/xla:types",
+        "//tensorflow/core:core",
         "//tensorflow/core:test",
     ] + if_cuda_is_configured([
         ":buffer_comparator",

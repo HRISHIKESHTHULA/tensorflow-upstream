@@ -182,6 +182,7 @@ EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE Index<IndexCount> FlatToTensorIndex(
 // Requires that nthreads is equal to the total number of elements in the input
 // tensor.
 template <typename T, int sp0, int sp1, int sp2, bool conjugate = false>
+__launch_bounds__(1024)
 __global__ void ShuffleInTensor3Simple(int nthreads,
                                        const T* __restrict__ input,
                                        Dimension<3> input_dims,
@@ -213,6 +214,7 @@ __global__ void ShuffleInTensor3Simple(int nthreads,
 static constexpr int kUnroll = 4;
 
 template <typename T, int sp0, int sp1, int sp2, bool conjugate = false>
+__launch_bounds__(1024)
 __global__ void ShuffleInTensor3SimpleVector(int nthreads,
                                              const T* __restrict__ input,
                                              Dimension<3> input_dims,
@@ -273,6 +275,7 @@ __global__ void ShuffleInTensor3SimpleVector(int nthreads,
 // the best performance on K40 GPUs.
 template <typename T, int NumThreads, int TileSizeI, int TileSizeJ,
           bool conjugate = false>
+__launch_bounds__(1024)
 __global__ void SwapDimension1And2InTensor3UsingTiles(
     const T* __restrict__ input, Dimension<3> input_dims,
     T* __restrict__ output) {
@@ -419,6 +422,7 @@ __global__ void SwapDimension1And2InTensor3UsingTiles(
 // A Gpu custom kernel that convert input to output, given proper padding on
 // the left and the top.
 template <typename T, int NDIMS>
+__launch_bounds__(1024)
 __global__ void PadInputCustomKernelNHWC(
     int nthreads, const T* __restrict__ input, Dimension<NDIMS> input_dims,
     T* __restrict__ output, Dimension<NDIMS> output_dims,
@@ -448,6 +452,7 @@ __global__ void PadInputCustomKernelNHWC(
 }
 
 template <typename T, int NDIMS>
+__launch_bounds__(1024)
 __global__ void PadInputCustomKernelNCHW(
     int nthreads, const T* __restrict__ input, Dimension<NDIMS> input_dims,
     T* __restrict__ output, Dimension<NDIMS> output_dims,
@@ -1130,7 +1135,79 @@ struct NCHWToNHWC<GPUDevice, T, NDIMS> {
   }
 };
 
+template <typename T>
+__launch_bounds__(1024)
+__global__ void ConvertToBFloat16Kernel(int nthreads, const T* src,
+                                        bfloat16* dst) {
+  GPU_1D_KERNEL_LOOP(index, nthreads) {
+    dst[index] =  bfloat16(src[index]);
+  }
+}
+
+template <int NDIMS>
+struct ConvertToBFloat16<GPUDevice, float, NDIMS> {
+  void operator()(const GPUDevice& d,
+                  typename TTypes<float, NDIMS>::ConstTensor in,
+                  typename TTypes<bfloat16, NDIMS>::Tensor out) {
+    int total_element_count = 1;
+    for (int i = 0; i < NDIMS; i++) {
+      total_element_count *= in.dimension(i);
+    }
+    GpuLaunchConfig config = GetGpuLaunchConfig(total_element_count, d);
+    TF_CHECK_OK(GpuLaunchKernel(ConvertToBFloat16Kernel<float>,
+                                config.block_count, config.thread_per_block, 0,
+                                d.stream(), config.virtual_thread_count,
+                                in.data(), out.data()));
+  }
+};
+
+template <typename T, int NDIMS>
+struct ConvertToBFloat16<GPUDevice, T, NDIMS> {
+  void operator()(const GPUDevice& d, typename TTypes<T, NDIMS>::ConstTensor in,
+                  typename TTypes<bfloat16, NDIMS>::Tensor out) {
+    LOG(FATAL) << "ConvertToBFloat16 not supported for data type: "
+               << DataTypeToEnum<T>::value;
+  }
+};
+
+template <typename T>
+__launch_bounds__(1024)
+__global__ void ConvertFromBFloat16Kernel(int nthreads, const bfloat16* src,
+                                          T* dst) {
+  GPU_1D_KERNEL_LOOP(index, nthreads) {
+    dst[index] = static_cast<T>(src[index]);
+  }
+}
+
+template <int NDIMS>
+struct ConvertFromBFloat16<GPUDevice, float, NDIMS> {
+  void operator()(const GPUDevice& d,
+                  typename TTypes<bfloat16, NDIMS>::ConstTensor in,
+                  typename TTypes<float, NDIMS>::Tensor out) {
+    int total_element_count = 1;
+    for (int i = 0; i < NDIMS; i++) {
+      total_element_count *= in.dimension(i);
+    }
+    GpuLaunchConfig config = GetGpuLaunchConfig(total_element_count, d);
+    TF_CHECK_OK(GpuLaunchKernel(ConvertFromBFloat16Kernel<float>,
+                                config.block_count, config.thread_per_block, 0,
+                                d.stream(), config.virtual_thread_count,
+                                in.data(), out.data()));
+  }
+};
+
+template <typename T, int NDIMS>
+struct ConvertFromBFloat16<GPUDevice, T, NDIMS> {
+  void operator()(const GPUDevice& d,
+                  typename TTypes<bfloat16, NDIMS>::ConstTensor in,
+                  typename TTypes<T, NDIMS>::Tensor out) {
+    LOG(FATAL) << "ConvertFromBFloat16 not supported for data type: "
+               << DataTypeToEnum<T>::value;
+  }
+};
+
 }  // namespace functor
+
 }  // namespace tensorflow
 
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM

@@ -196,7 +196,6 @@ py_test(
     srcs = ["distribute_lib_test.py"],
     python_version = "PY3",
     srcs_version = "PY2AND3",
-    tags = ["no_rocm"],
     deps = [
         ":combinations",
         ":distribute_lib",
@@ -1895,8 +1894,8 @@ tf_py_test(
     srcs = ["parameter_server_strategy_v2_test.py"],
     python_version = "PY3",
     tags = [
-        "no_windows",  # TODO(171349346)
-        "notsan",  # TODO(b/168675975)
+        "no_rocm",
+        "notsan",  # b/168675975
     ],
     deps = [
         ":multi_worker_test_base",

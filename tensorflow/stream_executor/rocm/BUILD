@@ -8,7 +8,7 @@ load(
 )
 load("//tensorflow:tensorflow.bzl", "tf_copts")
 load("//tensorflow:tensorflow.bzl", "filegroup")
-load("@local_config_rocm//rocm:build_defs.bzl", "if_rocm_is_configured")
+load("@local_config_rocm//rocm:build_defs.bzl", "if_rocm_is_configured", "rocm_copts")
 load("//tensorflow/core/platform:build_config_root.bzl", "if_static")
 
 package(
@@ -297,6 +297,33 @@ cc_library(
 )
 
 cc_library(
+    name = "roctracer_wrapper",
+    srcs = if_rocm_is_configured(["roctracer_wrapper.h"]),
+    hdrs = if_rocm_is_configured(["roctracer_wrapper.h"]),
+    deps = if_rocm_is_configured([
+        ":rocm_gpu_executor",
+        ":rocm_platform_id",
+        "@local_config_rocm//rocm:rocm_headers",
+        "//tensorflow/stream_executor/lib",
+        "//tensorflow/stream_executor/platform",
+        "//tensorflow/stream_executor/platform:dso_loader",
+    ] + if_static([
+        "@local_config_rocm//rocm:roctracer",
+    ])),
+    alwayslink = True,
+)
+
+cc_library(
+        name = "rocm_helpers",
+        srcs = ["rocm_helpers.cu.cc"],
+        deps = 
+        ["@local_config_rocm//rocm:rocm_headers",
+        ],
+        copts = rocm_copts(),
+        alwayslink = True,
+    )
+
+cc_library(
     name = "all_runtime",
     copts = tf_copts(),
     visibility = ["//visibility:public"],
@@ -307,6 +334,7 @@ cc_library(
         ":rocrand_plugin",
         ":rocm_driver",
         ":rocm_platform",
+        ":rocm_helpers"
     ]),
     alwayslink = 1,
 )
