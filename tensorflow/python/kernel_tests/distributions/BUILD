@@ -62,7 +62,6 @@ cuda_py_test(
     srcs = ["beta_test.py"],
     tags = [
         "notsan",  # b/173653918
-        "no_rocm",  # ROCm 3.9 regression
     ],
     xla_tags = [
         "no_cuda_asan",  # times out
